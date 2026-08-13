@@ -25,6 +25,9 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "mbedtls/base64.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 
 // ---------- Pin map ----------
 #define I2S_WS_PIN   20
@@ -170,7 +173,68 @@ static void record_task(void *arg)
     ESP_LOGI(TAG, "Recording done, press the button to play it back");
     vTaskDelete(NULL);
 }
+// ============================================================
+// Send the recording to the host as base64 over the same serial
+// link used for logging, wrapped in plain-text markers so a host
+// script can find it even inside idf.py monitor's log noise.
+// Reference: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/protocols/mbedtls.html
+// ============================================================
+#define B64_CHUNK_RAW_BYTES 240 // multiple of 3 -> only the final chunk needs '=' padding
 
+static void dump_recording_b64(void)
+{
+    printf("---AUDIO-START---\n");
+
+    const uint8_t *raw = (const uint8_t *)s_recording_buf;
+    size_t total = RECORD_SAMPLES * sizeof(int16_t);
+    size_t offset = 0;
+    unsigned char out[B64_CHUNK_RAW_BYTES * 4 / 3 + 16];
+
+    while (offset < total) {
+        size_t chunk = (total - offset < B64_CHUNK_RAW_BYTES) ? (total - offset) : B64_CHUNK_RAW_BYTES;
+        size_t out_len = 0;
+        int ret = mbedtls_base64_encode(out, sizeof(out), &out_len, raw + offset, chunk);
+        if (ret != 0) {
+            ESP_LOGE(TAG, "base64 encode failed: %d", ret);
+            return;
+        }
+        out[out_len] = '\0';
+        printf("%s\n", out);
+        offset += chunk;
+    }
+
+    printf("---AUDIO-END---\n");
+}
+// Switches stdin from the default non-blocking, poll-only console reads to
+// the UART driver's interrupt-driven, blocking reads, so a single incoming
+// byte can't be missed between polls.
+// Reference: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/stdio.html
+static void console_stdin_init(void)
+{
+    if (uart_is_driver_installed(UART_NUM_0)) {
+        return;
+    }
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
+    uart_vfs_dev_use_driver(UART_NUM_0);
+}
+// Polls stdin (non-blocking by default on the console VFS) for a 'd'
+// keypress/byte sent by the host script, and streams the recording
+// out when it arrives.
+static void serial_dump_task(void *arg)
+{
+    for (;;) {
+        int c = fgetc(stdin); // now blocks until a byte actually arrives
+        if (c == 'd' || c == 'D') {
+            if (s_state != APP_IDLE) {
+                ESP_LOGW(TAG, "Busy, try again once record/playback finishes");
+            } else if (!s_has_recording) {
+                ESP_LOGW(TAG, "No recording yet, press the button first");
+            } else {
+                dump_recording_b64();
+            }
+        }
+    }
+}
 // ============================================================
 // Heartbeat LED, purely decorative, runs independently of app state.
 // ============================================================
@@ -221,6 +285,8 @@ void app_main(void)
     buzzer_init();
     playback_timer_init();
     xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
+    console_stdin_init();
+    xTaskCreate(serial_dump_task, "serial_dump_task", 4096, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "Ready. Press the button to record %d s.", RECORD_SECONDS);
 
