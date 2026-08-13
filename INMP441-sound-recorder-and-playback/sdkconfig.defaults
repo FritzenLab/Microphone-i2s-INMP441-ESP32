@@ -1,0 +1,26 @@
+# This file was generated using idf.py save-defconfig or menuconfig [D] key. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 6.0.2 Project Minimal Configuration
+#
+# default:
+CONFIG_IDF_TARGET="esp32c6"
+
+#
+# Component config
+#
+
+#
+# ESP-Driver:Sigma Delta Modulator Configurations
+#
+CONFIG_SDM_CTRL_FUNC_IN_IRAM=y
+# end of ESP-Driver:Sigma Delta Modulator Configurations
+
+#
+# ESP PSRAM
+#
+
+#
+# ESP Timer (High Resolution Timer)
+#
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
+# end of ESP Timer (High Resolution Timer)
+# end of ESP PSRAM
